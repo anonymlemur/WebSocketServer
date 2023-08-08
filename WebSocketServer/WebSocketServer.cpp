@@ -1,214 +1,130 @@
+#include "InputSimulator.h"
 #include <iostream>
 #include <thread>
 #include <atomic>
+#include <map>
+#include <functional>
+#include <sstream>
+#include <condition_variable>
+#include <mutex>
+
 #include <websocketpp/config/asio_no_tls.hpp>
 #include <websocketpp/server.hpp>
-#include <websocketpp/common/thread.hpp>
+#ifdef _WIN32
 #include <Windows.h>
+#else
+#include <X11/Xlib.h>
+#include <X11/extensions/XTest.h>
+#endif
 
-std::condition_variable cv;
-std::mutex mutex;
-std::atomic<bool> mouse_moving(false); // Variable to track mouse movement
-std::thread move_thread;               // Thread for mouse movement
 
-void move_mouse_realtime(int delta_x, int delta_y)
-{
-	// Get the current mouse position
-	int current_x, current_y;
-	POINT cursorPos;
-	GetCursorPos(&cursorPos);
-	current_x = cursorPos.x;
-	current_y = cursorPos.y;
+// ----- Constants & Global Variables -----
+constexpr uint16_t SERVER_PORT = 12345;
+std::atomic<bool> g_mouseMoving(false);
 
-	// Perform real-time mouse movement
-	SetCursorPos(current_x + delta_x, current_y + delta_y);
+// ----- Utility Functions -----
+#ifdef _WIN32
 
-	// Print the new mouse position (optional)
-	std::cout << "Mouse moved: x=" << current_x + delta_x << ", y=" << current_y + delta_y << std::endl;
-
-	// Notify that mouse movement is done
-	mouse_moving = false;
+void moveMouseRealtime(int deltaX, int deltaY) {
+    POINT cursorPos;
+    GetCursorPos(&cursorPos);
+    SetCursorPos(cursorPos.x + deltaX, cursorPos.y + deltaY);
+    std::cout << "Mouse moved: x=" << cursorPos.x + deltaX << ", y=" << cursorPos.y + deltaY << std::endl;
 }
 
-void move_mouse(int delta_x, int delta_y)
-{
-	// Set the flag to indicate mouse movement
-	mouse_moving = true;
+#else
 
-	// Start the real-time mouse movement in a separate thread
-	move_thread = std::thread(move_mouse_realtime, delta_x, delta_y);
-	move_thread.detach(); // Detach the thread to let it run independently
+void moveMouseRealtime(int deltaX, int deltaY) {
+    Display* display = XOpenDisplay(NULL);
+    if (!display) {
+        std::cerr << "Failed to open X display." << std::endl;
+        return;
+    }
+    Window root = DefaultRootWindow(display);
+    XTestFakeMotionEvent(display, -1, deltaX, deltaY, 0);
+    XFlush(display);
+    XCloseDisplay(display);
+    std::cout << "Mouse moved: delta_x=" << deltaX << ", delta_y=" << deltaY << std::endl;
+}
+#endif
+void rightClickMouse() {
+    right_click_mouse();
 }
 
-void stop_mouse()
-{
-	// Set the flag to false to stop mouse movement
-	mouse_moving = false;
-
-	// Notify the move_mouse function to stop immediately
-	cv.notify_one();
-
-	// Wait for the move_thread to finish before returning
-	if (move_thread.joinable())
-	{
-		move_thread.join();
-	}
+void leftClickMouse() {
+    // Implement left-clicking for Windows here...
+    left_click_mouse();
 }
 
-void right_click_mouse()
-{
-	std::cout << "Right clicking mouse" << std::endl;
-
-	// Prepare the INPUT structure for the mouse click
-	INPUT input = { 0 };
-	input.type = INPUT_MOUSE;
-	input.mi.dwFlags = MOUSEEVENTF_RIGHTDOWN; // Press the left mouse button
-
-	// Send the mouse down event
-	SendInput(1, &input, sizeof(INPUT));
-
-	// Release the left mouse button
-	input.mi.dwFlags = MOUSEEVENTF_RIGHTUP;
-	SendInput(1, &input, sizeof(INPUT));
+void pressKey(const std::string& key) {
+    press_key(key);
 }
 
-void left_click_mouse()
-{
-	std::cout << "Left clicking mouse" << std::endl;
-
-	// Prepare the INPUT structure for the mouse click
-	INPUT input = { 0 };
-	input.type = INPUT_MOUSE;
-	input.mi.dwFlags = MOUSEEVENTF_LEFTDOWN; // Press the left mouse button
-
-	// Send the mouse down event
-	SendInput(1, &input, sizeof(INPUT));
-
-	// Release the left mouse button
-	input.mi.dwFlags = MOUSEEVENTF_LEFTUP;
-	SendInput(1, &input, sizeof(INPUT));
-	;
+void moveMouse(int deltaX, int deltaY) {
+    g_mouseMoving = true;
+    std::thread([=]() {
+        moveMouseRealtime(deltaX, deltaY);
+        g_mouseMoving = false;
+        }).detach();
 }
 
-void test()
-{
-	std::cout << "test" << std::endl;
+void stopMouse() {
+    g_mouseMoving = false;
+    // Add any other necessary cleanup for the moveMouse function.
 }
 
-// define keybord function that takes a string and presses the corresponding key
-void keyboard(std::string key)
-{
-	if (key.empty())
-	{
-		return; // Do nothing if the key string is empty
-	}
-
-	// Convert the string to a single character (assuming only one character is passed)
-	char c = key[0];
-
-	// Prepare the INPUT structure for the key press
-	INPUT input = { 0 };
-	input.type = INPUT_KEYBOARD;
-	input.ki.wVk = 0;                      // We'll use scan code instead of a virtual key
-	input.ki.wScan = static_cast<WORD>(c); // Convert the character to scan code
-	input.ki.dwFlags = KEYEVENTF_SCANCODE; // Use scan code instead of virtual key
-
-	// Send the key press event
-	SendInput(1, &input, sizeof(INPUT));
-
-	// Release the key
-	input.ki.dwFlags = KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP;
-	SendInput(1, &input, sizeof(INPUT));
+void keyboard(const std::string& key) {
+    if (key.empty()) return;
+    pressKey(key);
 }
 
 
+// ----- Main Server Logic -----
+int main() {
+    using Server = websocketpp::server<websocketpp::config::asio>;
+    Server websocketServer;
 
-// Function to process and dispatch commands
-void process_command(const std::map<std::string, std::function<void(const std::string&)>>& command_mapping, const std::string& data)
-{
-	// Split the data and get the command and parameters 
-	size_t pos = data.find(":");
-	std::string command = data.substr(0, pos);
-	std::string params = data.substr(pos + 1);
+    // Define command-function mapping
+    using CommandFunction = std::function<void(const std::string&)>;
+    std::map<std::string, CommandFunction> commandMapping = {
+        { "MOVE", [](const std::string& params) {
+            int deltaX, deltaY;
+            char delimiter;
+            std::istringstream iss(params);
+            iss >> deltaX >> delimiter >> deltaY;
+            if (delimiter == ',') moveMouse(deltaX, deltaY);
+            else std::cerr << "Invalid MOVE command parameters" << std::endl;
+        }},
+        { "KEYBOARD", [](const std::string& params) {
+            if (!params.empty()) keyboard(params);
+            else std::cerr << "Invalid KEYBOARD command parameters" << std::endl;
+        }},
+        { "STOP_MOVE", [](const std::string&) { stopMouse(); }},
+        { "LEFT_CLICK", [](const std::string&) { leftClickMouse(); }},
+        { "RIGHT_CLICK", [](const std::string&) { rightClickMouse(); }},
+        // ... Add other commands as necessary
+    };
 
-	// Call the corresponding function based on the command
-	auto it = command_mapping.find(command);
-	if (it != command_mapping.end())
-	{
-		it->second(params); // Call the function with the parameters
-	}
-}
+    // Setup WebSocket server handlers
+    websocketServer.set_message_handler([&commandMapping](websocketpp::connection_hdl hdl, Server::message_ptr msg) {
+        std::string data = msg->get_payload();
+        size_t pos = data.find(":");
+        if (pos == std::string::npos) {
+            std::cerr << "Invalid command format received: " << data << std::endl;
+            return;
+        }
+        std::string command = data.substr(0, pos);
+        std::string params = data.substr(pos + 1);
+        auto it = commandMapping.find(command);
+        if (it != commandMapping.end()) it->second(params);
+        else std::cerr << "Unknown command: " << command << std::endl;
+        });
 
-int main()
-{
-	std::cout << "Server is listening on 0.0.0.0:12345" << std::endl;
+    std::cout << "Server is listening on 0.0.0.0:" << SERVER_PORT << std::endl;
+    websocketServer.init_asio();
+    websocketServer.listen(SERVER_PORT);
+    websocketServer.start_accept();
+    websocketServer.run();
 
-	// Create the WebSocket server
-	using server = websocketpp::server<websocketpp::config::asio>;
-	server websocket_server;
-
-	// Define the command-function map
-	std::map<std::string, std::function<void(const std::string&)>> command_mapping;
-
-	// Add command-function pairs to the map using lambda functions
-	command_mapping.insert({ "MOVE", [](const std::string& params)
-							{
-			// Parse parameters (comma-separated delta_x and delta_y)
-			std::istringstream iss(params);
-			int delta_x, delta_y;
-			char delimiter;
-			iss >> delta_x >> delimiter >> delta_y;
-			if (delimiter == ',')
-			{
-				move_mouse(delta_x, delta_y);
-			}
-			else
-			{
-				std::cerr << "Invalid MOVE command parameters" << std::endl;
-			}
-		} });
-
-	command_mapping.insert({ "KEYBOARD", [](const std::string& params)
-							{
-			// Check if parameters are not empty
-			if (!params.empty()) {
-				// Pass the parameter to the keyboard function
-				keyboard(params);
-			}
-			else {
-				std::cerr << "Invalid KEYBOARD command parameters" << std::endl;
-			} } });
-
-	command_mapping.insert({ "STOP_MOVE", [](const std::string&)
-							{ stop_mouse(); } });
-
-	command_mapping.insert({ "LEFT_CLICK", [](const std::string&)
-							{ left_click_mouse(); } });
-
-	command_mapping.insert({ "RIGHT_CLICK", [](const std::string&)
-							{ right_click_mouse(); } });
-
-	command_mapping.insert({ "TEST", [](const std::string&)
-							{ test(); } });
-
-	// ... (Other command mappings)
-
-	// Set up the WebSocket server handlers
-	websocket_server.set_message_handler([&command_mapping](websocketpp::connection_hdl hdl, server::message_ptr msg)
-		{
-			std::string data = msg->get_payload();
-			std::cout << "Received: " << data << std::endl;
-
-			// Process and dispatch the command
-			process_command(command_mapping, data); });
-
-	// Start the WebSocket server on port 12345
-	websocket_server.init_asio();
-	websocket_server.listen(12345);
-	websocket_server.start_accept();
-
-	// Start the main event loop
-	websocket_server.run();
-
-	return 0;
+    return 0;
 }
