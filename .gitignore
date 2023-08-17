@@ -361,3 +361,6 @@ MigrationBackup/
 
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
+/WebSocketServer/WebSocketServer_old.cpp
+/WebSocketServer/WebSocketServer.cpp
+/WebSocketServer/WebSocketServer.h
