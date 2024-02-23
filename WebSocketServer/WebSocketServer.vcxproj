@@ -110,7 +110,7 @@
       <AdditionalIncludeDirectories>C:\source\vcpkg\installed\x64-windows\include;C:\source\vcpkg\installed\x64-windows\lib</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
-      <SubSystem>Console</SubSystem>
+      <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
     </Link>
   </ItemDefinitionGroup>
@@ -135,10 +135,18 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="InputSimulator.cpp" />
-    <ClCompile Include="WebSocketServer.cpp" />
+    <ClCompile Include="TrayApp.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="InputSimulator.h" />
+    <ClInclude Include="resource.h" />
+    <ClInclude Include="TrayApp.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <ResourceCompile Include="Resource.rc" />
+  </ItemGroup>
+  <ItemGroup>
+    <Image Include="icon1.ico" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
